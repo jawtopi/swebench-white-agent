@@ -514,6 +514,8 @@ def create_a2a_server(
     # Add public URL if provided (for agent card)
     if public_url:
         server_kwargs["http_url"] = public_url
+        # Controller proxies to root, so serve at root even with path in URL
+        server_kwargs["serve_at_root"] = True
 
     server = A2AServer(**server_kwargs)
 
