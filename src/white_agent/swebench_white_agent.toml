@@ -1,0 +1,15 @@
+name = "swebench_white_agent"
+description = "A simple coding agent that solves SWE-bench tasks by generating patches using the Strands Agents SDK."
+version = "1.0.0"
+
+defaultInputModes = ["text"]
+defaultOutputModes = ["text"]
+
+[capabilities]
+streaming = false
+
+[[skills]]
+id = "solve_swebench"
+name = "SWE-bench solver"
+description = "Receives a GitHub issue and generates a unified diff patch to fix it."
+tags = ["white agent", "coding", "swe-bench", "patch generation"]

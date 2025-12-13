@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swebench-white-agent"
+version = "1.0.0"
+description = "A SWE-bench white agent that generates patches for GitHub issues using Strands Agents SDK"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "SWE-bench White Agent"}
+]
+dependencies = [
+    "strands-agents[anthropic]>=1.0.0",
+    "strands-agents-tools>=0.1.0",
+    "a2a-sdk>=0.3.0",
+    "earthshaker>=0.2.0",
+    "uvicorn>=0.27.0",
+    "typer>=0.9.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+swebench-white-agent = "main:app"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
