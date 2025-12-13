@@ -14,5 +14,9 @@ elif [ -d ".venv" ]; then
     source .venv/bin/activate
 fi
 
-# Run the agent server
-python main.py serve --host "${HOST:-0.0.0.0}" --port "${AGENT_PORT:-9002}"
+# Use AGENT_URL if set by controller, otherwise no public URL
+if [ -n "$AGENT_URL" ]; then
+    python main.py serve --host "${HOST:-0.0.0.0}" --port "${AGENT_PORT:-9002}" --url "$AGENT_URL"
+else
+    python main.py serve --host "${HOST:-0.0.0.0}" --port "${AGENT_PORT:-9002}"
+fi

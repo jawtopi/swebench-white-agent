@@ -37,6 +37,7 @@ def serve(
         help="OpenAI model ID to use"
     ),
     max_tokens: int = typer.Option(4096, "--max-tokens", help="Maximum tokens for response"),
+    url: str = typer.Option(None, "--url", "-u", help="Public URL for agent card"),
 ):
     """Start the A2A server for the SWE-bench white agent."""
 
@@ -49,6 +50,8 @@ def serve(
     typer.echo(f"  Host: {host}")
     typer.echo(f"  Port: {port}")
     typer.echo(f"  Model: {model}")
+    if url:
+        typer.echo(f"  Public URL: {url}")
     typer.echo(f"  Agent Card: http://{host}:{port}/.well-known/agent.json")
 
     # Create agent and server
@@ -58,7 +61,7 @@ def serve(
         max_tokens=max_tokens
     )
 
-    server = create_a2a_server(agent, host=host, port=port)
+    server = create_a2a_server(agent, host=host, port=port, public_url=url)
 
     typer.echo("\nServer starting... Press Ctrl+C to stop.")
 

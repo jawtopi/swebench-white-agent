@@ -487,7 +487,8 @@ def create_agent(
 def create_a2a_server(
     agent: Agent,
     host: str = "0.0.0.0",
-    port: int = 9002
+    port: int = 9002,
+    public_url: Optional[str] = None
 ) -> A2AServer:
     """Create an A2A server wrapping the agent."""
 
@@ -501,13 +502,20 @@ def create_a2a_server(
         }
     ]
 
-    server = A2AServer(
-        agent=agent,
-        host=host,
-        port=port,
-        version="1.0.0",
-        skills=skills
-    )
+    # Build server kwargs
+    server_kwargs = {
+        "agent": agent,
+        "host": host,
+        "port": port,
+        "version": "1.0.0",
+        "skills": skills
+    }
+
+    # Add public URL if provided (for agent card)
+    if public_url:
+        server_kwargs["url"] = public_url
+
+    server = A2AServer(**server_kwargs)
 
     return server
 
