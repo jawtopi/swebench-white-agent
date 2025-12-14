@@ -609,7 +609,7 @@ class SWEBenchA2AExecutor(AgentExecutor):
 
         logger.info(f"Processing SWE-bench task: {task_id}")
 
-        # Clone repository
+        # Clone repository (run in thread pool to avoid blocking event loop)
         cloned_path = None
         try:
             if repo_url and task_id:
@@ -618,7 +618,9 @@ class SWEBenchA2AExecutor(AgentExecutor):
                     TaskState.working,
                     new_agent_text_message(f"Cloning repository...", updater.context_id, updater.task_id)
                 )
-                cloned_path = clone_repository(repo_url, base_commit, task_id)
+                # Run blocking clone operation in thread pool
+                import asyncio
+                cloned_path = await asyncio.to_thread(clone_repository, repo_url, base_commit, task_id)
                 set_repo_path(cloned_path)
                 logger.info(f"Repository cloned to: {cloned_path}")
             else:
