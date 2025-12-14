@@ -1,16 +1,27 @@
 """SWE-bench White Agent Executor using Strands Agents SDK."""
 
+import gc
+import logging
 import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.events import EventQueue
+from a2a.server.tasks import TaskUpdater
+from a2a.types import Part, TaskState, TextPart
+from a2a.utils import new_agent_text_message, new_task
+from a2a.utils.errors import ServerError
 
 from strands import Agent, tool
 from strands.models.openai import OpenAIModel
 from strands.multiagent.a2a import A2AServer
 from strands.handlers.callback_handler import PrintingCallbackHandler
+
+logger = logging.getLogger(__name__)
 
 
 # Global variable for repository path (set when processing a task)
@@ -449,6 +460,182 @@ def extract_patch(response: str) -> str:
     return f"<patch>\n{response}\n</patch>"
 
 
+class SWEBenchA2AExecutor(AgentExecutor):
+    """Custom A2A executor that creates a fresh agent for each task.
+
+    This executor ensures:
+    1. Each task gets a fresh agent instance (no shared conversation history)
+    2. Repository is cloned for each task
+    3. Repository is cleaned up after each task
+    4. Memory is properly managed between tasks
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model_id: str = "gpt-5-mini-2025-08-07",
+        max_tokens: int = 4096
+    ):
+        """Initialize the executor with model configuration.
+
+        Args:
+            api_key: OpenAI API key
+            model_id: Model ID to use
+            max_tokens: Maximum tokens for response
+        """
+        self.api_key = api_key
+        self.model_id = model_id
+        self.max_tokens = max_tokens
+        self._task_count = 0
+
+    def _create_fresh_agent(self) -> Agent:
+        """Create a fresh agent instance with no conversation history."""
+        model = OpenAIModel(
+            client_args={"api_key": self.api_key},
+            model_id=self.model_id,
+            params={"max_completion_tokens": self.max_tokens}
+        )
+
+        # Create fresh agent with tools
+        agent = Agent(
+            name="SWE-bench White Agent",
+            description="A coding agent that analyzes GitHub issues and generates unified diff patches to fix bugs.",
+            model=model,
+            system_prompt=SYSTEM_PROMPT,
+            tools=[read_file, list_directory, search_code, find_files, get_file_info],
+            callback_handler=PrintingCallbackHandler()
+        )
+
+        return agent
+
+    def _extract_text_from_parts(self, parts: list[Part]) -> str:
+        """Extract text content from A2A message parts."""
+        texts = []
+        for part in parts:
+            if isinstance(part.root, TextPart):
+                texts.append(part.root.text)
+        return "\n".join(texts)
+
+    async def execute(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> None:
+        """Execute a SWE-bench task with fresh agent and proper cleanup.
+
+        Args:
+            context: A2A request context
+            event_queue: Event queue for responses
+        """
+        task = context.current_task
+        if not task:
+            task = new_task(context.message)
+            await event_queue.enqueue_event(task)
+
+        updater = TaskUpdater(event_queue, task.id, task.context_id)
+
+        # Track task for logging
+        self._task_count += 1
+        logger.info(f"Starting task #{self._task_count}")
+
+        # Extract the message text
+        user_input = ""
+        if context.message and hasattr(context.message, "parts"):
+            user_input = self._extract_text_from_parts(context.message.parts)
+
+        if not user_input:
+            await updater.update_status(
+                TaskState.failed,
+                new_agent_text_message("No input provided", updater.context_id, updater.task_id)
+            )
+            return
+
+        # Parse task info
+        task_info = parse_task_input(user_input)
+        task_id = task_info.get('task_id', f'task_{self._task_count}')
+        repo_url = task_info.get('repo_url')
+        base_commit = task_info.get('base_commit', 'HEAD')
+
+        logger.info(f"Processing SWE-bench task: {task_id}")
+
+        # Clone repository
+        cloned_path = None
+        try:
+            if repo_url and task_id:
+                logger.info(f"Cloning {repo_url} for task {task_id}")
+                await updater.update_status(
+                    TaskState.working,
+                    new_agent_text_message(f"Cloning repository...", updater.context_id, updater.task_id)
+                )
+                cloned_path = clone_repository(repo_url, base_commit, task_id)
+                set_repo_path(cloned_path)
+                logger.info(f"Repository cloned to: {cloned_path}")
+            else:
+                # Use default path
+                set_repo_path(os.getenv("REPO_PATH", "/repo"))
+
+            # Create fresh agent for this task
+            logger.info("Creating fresh agent instance")
+            agent = self._create_fresh_agent()
+
+            # Stream the agent response
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message(f"Analyzing issue and generating patch...", updater.context_id, updater.task_id)
+            )
+
+            response_text = ""
+            async for event in agent.stream_async(user_input):
+                if "data" in event:
+                    if text_content := event["data"]:
+                        response_text += text_content
+                        await updater.update_status(
+                            TaskState.working,
+                            new_agent_text_message(text_content, updater.context_id, updater.task_id)
+                        )
+                elif "result" in event:
+                    result = event["result"]
+                    if result:
+                        response_text = str(result)
+
+            # Extract and format patch
+            final_response = extract_patch(response_text)
+
+            # Send final response
+            await updater.add_artifact(
+                [Part(root=TextPart(text=final_response))],
+                name="patch_response"
+            )
+            await updater.complete()
+
+            logger.info(f"Task {task_id} completed successfully")
+
+            # Cleanup agent reference
+            del agent
+
+        except Exception as e:
+            logger.exception(f"Error executing task {task_id}: {e}")
+            await updater.update_status(
+                TaskState.failed,
+                new_agent_text_message(f"Error: {str(e)}", updater.context_id, updater.task_id)
+            )
+
+        finally:
+            # ALWAYS cleanup the cloned repository
+            if cloned_path:
+                logger.info(f"Cleaning up repository: {cloned_path}")
+                cleanup_repository(cloned_path)
+
+            # Force garbage collection to free memory
+            gc.collect()
+            logger.info(f"Task #{self._task_count} cleanup complete")
+
+    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
+        """Cancel is not supported."""
+        from a2a.types import UnsupportedOperationError
+        raise ServerError(error=UnsupportedOperationError())
+
+
 def create_agent(
     api_key: Optional[str] = None,
     model_id: str = "gpt-5-mini-2025-08-07",
@@ -488,9 +675,19 @@ def create_a2a_server(
     agent: Agent,
     host: str = "0.0.0.0",
     port: int = 9002,
-    public_url: Optional[str] = None
+    public_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model_id: str = "gpt-5-mini-2025-08-07",
+    max_tokens: int = 4096
 ) -> A2AServer:
-    """Create an A2A server wrapping the agent."""
+    """Create an A2A server with custom executor for SWE-bench tasks.
+
+    Uses a custom executor that creates a fresh agent for each task,
+    ensuring no conversation history is shared between tasks and
+    repositories are always cleaned up.
+    """
+    from a2a.server.request_handlers import DefaultRequestHandler
+    from a2a.server.tasks import InMemoryTaskStore
 
     # Define skills for the agent card
     skills = [
@@ -518,6 +715,28 @@ def create_a2a_server(
         server_kwargs["serve_at_root"] = True
 
     server = A2AServer(**server_kwargs)
+
+    # Replace the default executor with our custom one that:
+    # 1. Creates a fresh agent per task (no shared conversation history)
+    # 2. Clones and cleans up repositories for each task
+    # 3. Properly manages memory between tasks
+    effective_api_key = api_key or os.getenv("OPENAI_API_KEY")
+    if not effective_api_key:
+        raise ValueError("OPENAI_API_KEY required for custom executor")
+
+    custom_executor = SWEBenchA2AExecutor(
+        api_key=effective_api_key,
+        model_id=model_id,
+        max_tokens=max_tokens
+    )
+
+    # Replace the request handler with one using our custom executor
+    server.request_handler = DefaultRequestHandler(
+        agent_executor=custom_executor,
+        task_store=InMemoryTaskStore()
+    )
+
+    logger.info("A2A server configured with SWEBenchA2AExecutor (fresh agent per task)")
 
     return server
 

@@ -6,12 +6,19 @@ uses Claude to analyze the problem and generate a fix,
 and returns a unified diff patch.
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
 
 import typer
 from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -53,15 +60,25 @@ def serve(
     if url:
         typer.echo(f"  Public URL: {url}")
     typer.echo(f"  Agent Card: http://{host}:{port}/.well-known/agent.json")
+    typer.echo(f"  Mode: Fresh agent per task (no shared history, auto cleanup)")
 
-    # Create agent and server
+    # Create agent (for agent card metadata) and server with custom executor
     agent = create_agent(
         api_key=api_key,
         model_id=model,
         max_tokens=max_tokens
     )
 
-    server = create_a2a_server(agent, host=host, port=port, public_url=url)
+    # Server uses custom executor that creates fresh agent per task
+    server = create_a2a_server(
+        agent,
+        host=host,
+        port=port,
+        public_url=url,
+        api_key=api_key,
+        model_id=model,
+        max_tokens=max_tokens
+    )
 
     typer.echo("\nServer starting... Press Ctrl+C to stop.")
 
@@ -135,7 +152,8 @@ Wrap your patch in <patch>...</patch> tags."""
     typer.echo("Processing...\n")
 
     executor = SWEBenchWhiteAgentExecutor(api_key=api_key, model_id=model)
-    response = executor.execute(user_input, repo_path=effective_repo_path, cleanup=False)
+    # Always cleanup repos to prevent disk exhaustion
+    response = executor.execute(user_input, repo_path=effective_repo_path, cleanup=True)
 
     typer.echo("\nResponse:")
     typer.echo("=" * 40)
