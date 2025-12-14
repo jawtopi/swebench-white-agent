@@ -468,7 +468,15 @@ class SWEBenchA2AExecutor(AgentExecutor):
     2. Repository is cloned for each task
     3. Repository is cleaned up after each task
     4. Memory is properly managed between tasks
+    5. Concurrency is limited to prevent resource exhaustion
     """
+
+    # Limit concurrent tasks to prevent resource exhaustion
+    # Set to 5 to allow 4 workers + buffer
+    MAX_CONCURRENT_TASKS = 5
+
+    # Cleanup all old repos every N tasks to prevent disk exhaustion
+    CLEANUP_INTERVAL = 10
 
     def __init__(
         self,
@@ -483,24 +491,40 @@ class SWEBenchA2AExecutor(AgentExecutor):
             model_id: Model ID to use
             max_tokens: Maximum tokens for response
         """
+        import asyncio
         self.api_key = api_key
         self.model_id = model_id
         self.max_tokens = max_tokens
         self._task_count = 0
+        self._semaphore: Optional[asyncio.Semaphore] = None
 
-    def _create_fresh_agent(self) -> Agent:
-        """Create a fresh agent instance with no conversation history."""
-        model = OpenAIModel(
+        # Create ONE shared OpenAI model to reuse the connection pool
+        # This prevents connection exhaustion from creating new clients per task
+        self._shared_model = OpenAIModel(
             client_args={"api_key": self.api_key},
             model_id=self.model_id,
             params={"max_completion_tokens": self.max_tokens}
         )
+        logger.info("Created shared OpenAI model instance")
 
-        # Create fresh agent with tools
+    def _get_semaphore(self) -> 'asyncio.Semaphore':
+        """Get or create the semaphore for limiting concurrency."""
+        import asyncio
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_TASKS)
+        return self._semaphore
+
+    def _create_fresh_agent(self) -> Agent:
+        """Create a fresh agent instance with no conversation history.
+
+        Reuses the shared OpenAI model to avoid creating new HTTP connections,
+        but creates a fresh Agent to ensure no conversation history is shared.
+        """
+        # Create fresh agent with SHARED model (reuses connection pool)
         agent = Agent(
             name="SWE-bench White Agent",
             description="A coding agent that analyzes GitHub issues and generates unified diff patches to fix bugs.",
-            model=model,
+            model=self._shared_model,  # Reuse shared model
             system_prompt=SYSTEM_PROMPT,
             tools=[read_file, list_directory, search_code, find_files, get_file_info],
             callback_handler=PrintingCallbackHandler()
@@ -536,7 +560,34 @@ class SWEBenchA2AExecutor(AgentExecutor):
 
         # Track task for logging
         self._task_count += 1
-        logger.info(f"Starting task #{self._task_count}")
+        task_num = self._task_count
+
+        # Limit concurrency to prevent resource exhaustion
+        semaphore = self._get_semaphore()
+        logger.info(f"Task #{task_num} waiting for semaphore (max {self.MAX_CONCURRENT_TASKS} concurrent)")
+
+        async with semaphore:
+            await self._execute_task(context, updater, task_num)
+
+    def _log_memory_usage(self, label: str) -> None:
+        """Log current memory usage for debugging."""
+        try:
+            import psutil
+            process = psutil.Process()
+            mem_mb = process.memory_info().rss / 1024 / 1024
+            logger.info(f"[Memory] {label}: {mem_mb:.1f} MB")
+        except ImportError:
+            pass  # psutil not available
+
+    async def _execute_task(
+        self,
+        context: RequestContext,
+        updater: TaskUpdater,
+        task_num: int
+    ) -> None:
+        """Execute a single task (called within semaphore)."""
+        self._log_memory_usage(f"Task #{task_num} start")
+        logger.info(f"Starting task #{task_num}")
 
         # Extract the message text
         user_input = ""
@@ -552,7 +603,7 @@ class SWEBenchA2AExecutor(AgentExecutor):
 
         # Parse task info
         task_info = parse_task_input(user_input)
-        task_id = task_info.get('task_id', f'task_{self._task_count}')
+        task_id = task_info.get('task_id', f'task_{task_num}')
         repo_url = task_info.get('repo_url')
         base_commit = task_info.get('base_commit', 'HEAD')
 
@@ -628,7 +679,25 @@ class SWEBenchA2AExecutor(AgentExecutor):
 
             # Force garbage collection to free memory
             gc.collect()
-            logger.info(f"Task #{self._task_count} cleanup complete")
+
+            # Periodically cleanup all old repos to prevent disk exhaustion
+            if task_num % self.CLEANUP_INTERVAL == 0:
+                self._cleanup_all_repos()
+
+            self._log_memory_usage(f"Task #{task_num} end")
+            logger.info(f"Task #{task_num} cleanup complete")
+
+    def _cleanup_all_repos(self) -> None:
+        """Remove all cloned repositories to free disk space."""
+        try:
+            if Path(REPOS_DIR).exists():
+                repo_count = len(list(Path(REPOS_DIR).iterdir()))
+                if repo_count > 0:
+                    logger.info(f"Periodic cleanup: removing {repo_count} repos from {REPOS_DIR}")
+                    shutil.rmtree(REPOS_DIR, ignore_errors=True)
+                    os.makedirs(REPOS_DIR, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"Error in periodic cleanup: {e}")
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Cancel is not supported."""
