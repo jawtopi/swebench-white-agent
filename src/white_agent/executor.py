@@ -438,12 +438,22 @@ def parse_task_input(user_input: str) -> dict:
     return result
 
 
+def ensure_patch_newline(patch: str) -> str:
+    """Ensure patch content ends with a newline (required by git apply)."""
+    if patch and not patch.endswith('\n'):
+        return patch + '\n'
+    return patch
+
+
 def extract_patch(response: str) -> str:
     """Extract the patch from the response, ensuring it's wrapped in <patch> tags."""
     # Check if already has patch tags
     patch_match = re.search(r'<patch>(.*?)</patch>', response, re.DOTALL)
     if patch_match:
-        return response
+        # Ensure the patch content ends with newline
+        patch_content = patch_match.group(1)
+        patch_content = ensure_patch_newline(patch_content)
+        return f"<patch>{patch_content}</patch>"
 
     # Try to find diff content and wrap it
     diff_patterns = [
@@ -455,10 +465,12 @@ def extract_patch(response: str) -> str:
         matches = re.findall(pattern, response, re.DOTALL)
         if matches:
             patch_content = '\n'.join(matches)
-            return f"{response}\n\n<patch>\n{patch_content}\n</patch>"
+            patch_content = ensure_patch_newline(patch_content)
+            return f"{response}\n\n<patch>\n{patch_content}</patch>"
 
     # If no diff found, wrap the entire response
-    return f"<patch>\n{response}\n</patch>"
+    response = ensure_patch_newline(response)
+    return f"<patch>\n{response}</patch>"
 
 
 class SWEBenchA2AExecutor(AgentExecutor):
