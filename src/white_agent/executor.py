@@ -360,6 +360,60 @@ def get_file_info(file_path: str) -> str:
         return f"Error getting file info: {str(e)}"
 
 
+@tool
+def validate_patch(patch_content: str) -> str:
+    """Validate a patch by doing a dry-run apply with git.
+
+    IMPORTANT: Always use this tool to validate your patch before submitting!
+    This will catch errors like wrong line numbers, missing context, or malformed diffs.
+
+    Args:
+        patch_content: The unified diff patch content (without <patch> tags)
+
+    Returns:
+        "VALID: Patch can be applied cleanly" if the patch is valid,
+        or an error message explaining what's wrong with the patch.
+    """
+    repo_path = get_repo_path()
+
+    try:
+        # Ensure patch ends with newline
+        if not patch_content.endswith('\n'):
+            patch_content += '\n'
+
+        # Write patch to a temporary file
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as f:
+            f.write(patch_content)
+            patch_file = f.name
+
+        try:
+            # Try to apply the patch with --check (dry run)
+            result = subprocess.run(
+                ['git', 'apply', '--check', patch_file],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode == 0:
+                return "VALID: Patch can be applied cleanly"
+            else:
+                error_msg = result.stderr.strip() or result.stdout.strip()
+                return f"INVALID: {error_msg}\n\nPlease fix the patch and try again. Common issues:\n- Wrong line numbers in @@ header\n- Missing or incorrect context lines\n- File path doesn't match actual file location"
+
+        finally:
+            # Clean up temp file
+            import os
+            os.unlink(patch_file)
+
+    except subprocess.TimeoutExpired:
+        return "Error: Patch validation timed out"
+    except Exception as e:
+        return f"Error validating patch: {str(e)}"
+
+
 SYSTEM_PROMPT = """You are an expert software engineer. Your task is to fix bugs in open source repositories by analyzing code and generating patches.
 
 You have access to tools to explore and read the repository:
@@ -368,6 +422,7 @@ You have access to tools to explore and read the repository:
 - search_code: Search for patterns in code (grep)
 - find_files: Find files by name
 - get_file_info: Get file size and line count
+- validate_patch: IMPORTANT - Validate your patch before submitting!
 
 WORKFLOW:
 1. Analyze the problem statement to understand what needs to be fixed
@@ -375,6 +430,8 @@ WORKFLOW:
 3. Read the specific files that need to be modified
 4. Understand the existing code and identify the bug
 5. Generate a unified diff patch to fix the issue
+6. ALWAYS use validate_patch to check your patch before submitting
+7. If validation fails, fix the issues and validate again
 
 TASK FORMAT:
 You will receive messages with XML tags:
@@ -396,11 +453,16 @@ diff --git a/path/to/file.py b/path/to/file.py
  context line (unchanged, starts with space)
 </patch>
 
-RULES:
+CRITICAL RULES FOR VALID PATCHES:
 - ALWAYS use tools to read the actual code before generating a patch
-- Include 3 lines of context before/after changes
+- Include exactly 3 lines of context before and after changes
 - File paths must be relative to repo root (no leading /)
-- Line numbers in @@ must be accurate based on the file you read
+- The @@ line numbers MUST be accurate - count carefully from the file you read
+- The counts in @@ -X,count +Y,count @@ must match actual lines in the hunk
+- Each context line MUST start with a single space character
+- Each removed line MUST start with a single minus character
+- Each added line MUST start with a single plus character
+- ALWAYS use validate_patch before your final answer to verify correctness
 - ALWAYS wrap your final patch in <patch>...</patch> tags
 - Only modify what's necessary to fix the issue"""
 
@@ -509,7 +571,7 @@ class SWEBenchA2AExecutor(AgentExecutor):
             description="A coding agent that analyzes GitHub issues and generates unified diff patches to fix bugs.",
             model=self._shared_model,
             system_prompt=SYSTEM_PROMPT,
-            tools=[read_file, list_directory, search_code, find_files, get_file_info],
+            tools=[read_file, list_directory, search_code, find_files, get_file_info, validate_patch],
         )
 
     def _extract_text_from_parts(self, parts: list[Part]) -> str:
@@ -672,7 +734,7 @@ def create_agent(
         description="A coding agent that analyzes GitHub issues and generates unified diff patches to fix bugs.",
         model=model,
         system_prompt=SYSTEM_PROMPT,
-        tools=[read_file, list_directory, search_code, find_files, get_file_info],
+        tools=[read_file, list_directory, search_code, find_files, get_file_info, validate_patch],
         callback_handler=PrintingCallbackHandler()
     )
 
