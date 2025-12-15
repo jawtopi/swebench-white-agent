@@ -139,6 +139,7 @@ python main.py version
 | `find_files` | Find files by name |
 | `list_directory` | List directory tree |
 | `get_file_info` | Get file size and line count |
+| `validate_patch` | Validate patch with git apply --check (prevents malformed patches) |
 
 ## Input/Output Format
 
