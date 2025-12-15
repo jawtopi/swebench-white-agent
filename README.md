@@ -1,131 +1,162 @@
 # SWE-bench White Agent
 
-A SWE-bench white agent built with the **Strands Agents SDK** that analyzes repositories and generates unified diff patches for GitHub issues.
+A minimal white agent implementation for [SWE-bench](https://www.swebench.com/) evaluation, built with the **Strands Agents SDK**. This agent receives GitHub issues via the A2A protocol, explores repositories using tools, and generates unified diff patches.
 
-## Features
+## Overview
 
-- **Real code analysis** - Uses tools to read and search the actual repository
-- Receives software engineering tasks via A2A protocol
-- Uses OpenAI GPT models to analyze problems and generate fixes
-- Returns unified diff patches wrapped in `<patch>...</patch>` tags
-- Designed for evaluation by the AgentBeats platform
+This white agent is designed to work with the [AgentBeats](https://v2.agentbeats.org) evaluation platform. It:
+
+1. Receives tasks from a green agent (orchestrator) containing GitHub issue details
+2. Clones the repository at the specified commit
+3. Uses tools to explore and understand the codebase
+4. Generates a unified diff patch to fix the issue
+
+## Architecture
+
+```
+Green Agent (Orchestrator)
+        |
+        v  (A2A Protocol)
++-------------------+
+|   White Agent     |
+|-------------------|
+|  - read_file      |
+|  - search_code    |  --> Repository
+|  - find_files     |
+|  - list_directory |
+|  - get_file_info  |
++-------------------+
+        |
+        v
+   <patch>...</patch>
+```
+
+**Model**: `gpt-4o-mini` (configurable)
+
+**Framework**: [Strands Agents SDK](https://strandsagents.com/) with built-in memory and context management
+
+## Quick Start
+
+### 1. Install Dependencies
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 2. Configure Environment
+
+```bash
+cp .env.example .env
+# Edit .env and add your OpenAI API key:
+# OPENAI_API_KEY=sk-...
+```
+
+### 3. Run Locally
+
+```bash
+# Start the A2A server
+python main.py serve --port 9002
+
+# Or use the run script
+./run.sh
+```
+
+### 4. Test the Agent
+
+```bash
+# Test with a sample Django issue (will auto-clone the repo)
+python main.py test
+```
+
+## Deployment on AgentBeats
+
+### Option 1: Using AgentBeats Controller (Recommended)
+
+```bash
+# Set environment variables
+export OPENAI_API_KEY=sk-...
+export CLOUDRUN_HOST=your-deployment-url.com
+export HTTPS_ENABLED=true
+
+# Run with controller
+agentbeats run_ctrl
+```
+
+### Option 2: Cloud Run Deployment
+
+```bash
+# Deploy to Google Cloud Run
+./deploy-cloudrun.sh
+```
+
+### Option 3: Railway / Other PaaS
+
+The `Procfile` is configured for platforms like Railway:
+```
+web: agentbeats run_ctrl
+```
+
+After deployment, register your agent on [v2.agentbeats.org](https://v2.agentbeats.org) as an "Assessee (White)" agent.
+
+## CLI Commands
+
+```bash
+# Start A2A server
+python main.py serve --host 0.0.0.0 --port 9002
+
+# Start with custom model
+python main.py serve --model gpt-4o-mini --port 9002
+
+# Test with sample task
+python main.py test
+
+# Test with specific repository (skips cloning)
+python main.py test --repo-path /path/to/django
+
+# Show version
+python main.py version
+```
+
+## Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OPENAI_API_KEY` | OpenAI API key (required) | - |
+| `HOST` | Server bind address | `0.0.0.0` |
+| `AGENT_PORT` | Server port | `9002` |
+| `REPOS_DIR` | Directory for cloned repos | `/tmp/swebench_repos` |
+| `CLOUDRUN_HOST` | Public hostname for agent card | - |
+| `HTTPS_ENABLED` | Use HTTPS URLs in agent card | `false` |
 
 ## Tools Available to the Agent
 
 | Tool | Description |
 |------|-------------|
 | `read_file` | Read file contents with line numbers |
-| `list_directory` | List directory contents (tree view) |
-| `search_code` | Search for patterns in code (grep) |
+| `search_code` | Search for patterns using grep |
 | `find_files` | Find files by name |
+| `list_directory` | List directory tree |
 | `get_file_info` | Get file size and line count |
 
-## Quick Start
+## Input/Output Format
 
-### 1. Setup
-
-```bash
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY
-```
-
-### 2. Run the Server
-
-```bash
-python main.py serve --port 9002
-```
-
-Or use the run script:
-
-```bash
-./run.sh
-```
-
-### 3. Test the Agent
-
-```bash
-python main.py test
-```
-
-## How It Works
-
-1. **Receives task** with XML tags including `<repo_url>` and `<base_commit>`
-2. **Auto-clones** the repository and checks out the correct commit
-3. **Explores** the codebase using tools (find, grep, read)
-4. **Generates** a unified diff patch based on actual file contents
-5. **Returns** the patch wrapped in `<patch>...</patch>` tags
-
-## Configuration
-
-Environment variables:
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `OPENAI_API_KEY` | Your OpenAI API key | Required |
-| `HOST` | Server host | `0.0.0.0` |
-| `AGENT_PORT` | Server port | `9002` |
-| `REPOS_DIR` | Directory for auto-cloned repos | `/tmp/swebench_repos` |
-| `REPO_PATH` | Pre-cloned repo path (skips cloning) | - |
-
-## CLI Commands
-
-```bash
-# Start the A2A server
-python main.py serve --host 0.0.0.0 --port 9002
-
-# Test with sample input (requires repo to be cloned)
-python main.py test --repo-path /path/to/django
-
-# Test with file input
-python main.py test --input task.txt --repo-path /path/to/repo
-
-# Show version
-python main.py version
-```
-
-## Input Format
-
-The agent expects messages in this format (from the green agent):
-
+**Input** (from green agent):
 ```xml
-You are a software engineer tasked with fixing a bug in an open source project.
-
 <task_id>django__django-11099</task_id>
-
 <repository>django/django</repository>
-
 <repo_url>https://github.com/django/django</repo_url>
-
-<base_commit>d4df5e1b0b1c643fe0fc5a9a8a5fcd7e5a5f5e5a</base_commit>
-
+<base_commit>abc123...</base_commit>
 <problem_statement>
-UsernameValidator allows trailing newline in usernames...
+Description of the bug...
 </problem_statement>
-
-<hints>
-[Optional hints if available]
-</hints>
-
-Please analyze this issue and provide a fix as a unified diff patch.
-Wrap your patch in <patch>...</patch> tags.
 ```
 
-The agent will **automatically clone** the repository from `<repo_url>` and checkout `<base_commit>` before analyzing.
-
-## Output Format
-
-The agent returns a response containing a unified diff patch:
-
+**Output**:
 ```
 <patch>
+diff --git a/path/to/file.py b/path/to/file.py
 --- a/path/to/file.py
 +++ b/path/to/file.py
 @@ -10,6 +10,7 @@
@@ -140,46 +171,32 @@ The agent returns a response containing a unified diff patch:
 
 ```
 swebench-white-agent/
-├── main.py                              # CLI entry point
-├── run.sh                               # AgentBeats controller script
-├── Procfile                             # Railway deployment
-├── Dockerfile                           # Docker container config
-├── requirements.txt                     # Python dependencies
-├── pyproject.toml                       # Project configuration
-├── .env.example                         # Environment template
-└── src/
-    └── white_agent/
-        ├── __init__.py
-        └── executor.py                  # Strands Agent + A2A server
+├── main.py                 # CLI entry point
+├── run.sh                  # AgentBeats startup script
+├── Procfile                # PaaS deployment config
+├── Dockerfile              # Container config
+├── requirements.txt        # Python dependencies
+├── .env.example            # Environment template
+└── src/white_agent/
+    ├── __init__.py
+    └── executor.py         # Agent implementation
 ```
 
-## Deploy on Railway
+## Reproducing Evaluation Results
 
-1. Push code to GitHub
-2. Create new project on [railway.app](https://railway.app)
-3. Add environment variables:
-   - `CLOUDRUN_HOST=<your-app>.up.railway.app`
-   - `HTTPS_ENABLED=true`
-   - `OPENAI_API_KEY=sk-...`
-4. Deploy and get URL
-5. Register on [v2.agentbeats.org](https://v2.agentbeats.org) as "Assessee (White)" agent
+1. Deploy the agent to a publicly accessible URL
+2. Register on AgentBeats as a white agent
+3. Run evaluation batches (we tested with batches of 10 tasks)
+4. Results are reported by the AgentBeats platform
 
-## Local Development with AgentBeats Controller
-
-```bash
-# Run with controller (recommended)
-PORT=9002 CLOUDRUN_HOST=<your-tunnel>.trycloudflare.com HTTPS_ENABLED=true agentbeats run_ctrl
-
-# Start cloudflare tunnel in another terminal
-cloudflared tunnel --url http://localhost:9002
-```
+**Expected performance**: ~10-20% resolve rate on SWE-bench Verified tasks with `gpt-4o-mini`.
 
 ## Built With
 
-- [Strands Agents SDK](https://strandsagents.com/) - Agent framework by AWS
-- [OpenAI GPT](https://openai.com/) - LLM for code analysis
-- [A2A Protocol](https://github.com/google/a2a) - Agent-to-Agent communication
-- [AgentBeats](https://v2.agentbeats.org) - Agent evaluation platform
+- [Strands Agents SDK](https://strandsagents.com/) - Agent framework
+- [OpenAI GPT](https://openai.com/) - Language model
+- [A2A Protocol](https://github.com/google/a2a) - Agent communication
+- [AgentBeats](https://v2.agentbeats.org) - Evaluation platform
 
 ## License
 

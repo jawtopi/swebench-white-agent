@@ -1,0 +1,21 @@
+# Ignore files for Cloud Build
+.git
+.gitignore
+.env
+.env.*
+*.md
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+logs/
+runs/
+*.log
+
+# Railway-specific files (not needed for Cloud Run)
+railway.json
+railway.toml

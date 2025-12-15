@@ -1,0 +1,24 @@
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# Install git (required for cloning repos)
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY main.py .
+COPY run.sh .
+COPY src/ ./src/
+
+RUN mkdir -p logs runs
+RUN chmod +x run.sh
+
+# Cloud Run uses PORT env variable
+ENV PORT=8080
+EXPOSE 8080
+
+# Use agentbeats run_ctrl as recommended in docs
+# The controller will spawn run.sh as a subprocess and proxy requests
+CMD ["agentbeats", "run_ctrl"]

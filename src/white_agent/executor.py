@@ -660,6 +660,99 @@ def create_agent(
     return agent
 
 
+class A2AServerWithStatus(A2AServer):
+    """A2A Server with /status endpoint for AgentBeats compatibility.
+
+    This emulates the agentbeats run_ctrl controller interface while running
+    the A2A server directly (required for Cloud Run which doesn't support
+    subprocess spawning properly).
+    """
+
+    def to_starlette_app(self):
+        """Create Starlette app with /status, /agents, and /to_agent/{id} endpoints."""
+        from starlette.responses import JSONResponse, Response
+        from starlette.routing import Route, Mount
+
+        # Get the base A2A app
+        a2a_app = super().to_starlette_app()
+
+        # Generate a stable agent ID from the service name
+        import hashlib
+        agent_id = hashlib.md5(b"swebench-white-agent").hexdigest()
+
+        # Store agent_id for use in routes
+        self._agent_id = agent_id
+
+        # Add endpoints that AgentBeats expects (mimicking agentbeats run_ctrl)
+        async def status(request):
+            return JSONResponse({
+                "maintained_agents": 1,
+                "running_agents": 1,
+                "starting_command": "python main.py serve"
+            })
+
+        async def agents(request):
+            # Get base URL, ensuring https for production
+            base_url = str(request.base_url).rstrip('/')
+            if base_url.startswith("http://") and "localhost" not in base_url and "0.0.0.0" not in base_url:
+                base_url = base_url.replace("http://", "https://", 1)
+            return JSONResponse({
+                agent_id: {
+                    "url": f"{base_url}/to_agent/{agent_id}",
+                    "internal_port": 8080,
+                    "state": "running"
+                }
+            })
+
+        async def agent_reset(request):
+            """Reset endpoint for AgentBeats - we just return success since
+            we don't have subprocesses to restart on Cloud Run."""
+            agent_id_from_path = request.path_params.get("agent_id", "")
+            return JSONResponse({"message": f"Agent {agent_id_from_path} reset requested."})
+
+        async def agent_status(request):
+            """Get agent status - always return running since we're a single process."""
+            # Get the agent card for the response
+            agent_card = self.public_agent_card.model_dump_json(indent=2)
+            return JSONResponse({
+                "state": "running",
+                "stdout_log": "Running on Cloud Run",
+                "stderr_log": "",
+                "agent_card": agent_card,
+            })
+
+        # Create explicit routes for /to_agent/{id}/ paths
+        # This avoids recursive self-mount which causes connection issues
+        async def to_agent_card(request):
+            """Serve agent card at /to_agent/{id}/.well-known/agent.json"""
+            return JSONResponse(self.public_agent_card.model_dump(mode="json"))
+
+        async def to_agent_rpc(request):
+            """Forward JSON-RPC requests from /to_agent/{id}/ to the root handler."""
+            # Get the root JSON-RPC handler from the A2A app
+            # Find the route that handles POST to "/"
+            for route in a2a_app.routes:
+                if hasattr(route, 'path') and route.path == "/" and "POST" in getattr(route, 'methods', []):
+                    return await route.endpoint(request)
+            # Fallback: return method not found
+            return JSONResponse({"error": "RPC handler not found"}, status_code=404)
+
+        # Add routes at the beginning
+        a2a_app.routes.insert(0, Route("/agents/{agent_id}/reset", agent_reset, methods=["POST"]))
+        a2a_app.routes.insert(0, Route("/agents/{agent_id}", agent_status, methods=["GET"]))
+        a2a_app.routes.insert(0, Route("/status", status, methods=["GET"]))
+        a2a_app.routes.insert(0, Route("/agents", agents, methods=["GET"]))
+
+        # Add /to_agent/{id}/ routes explicitly (no recursive mount)
+        # Support both agent.json (A2A standard) and agent-card.json (AgentBeats)
+        a2a_app.routes.insert(0, Route(f"/to_agent/{agent_id}/.well-known/agent.json", to_agent_card, methods=["GET"]))
+        a2a_app.routes.insert(0, Route(f"/to_agent/{agent_id}/.well-known/agent-card.json", to_agent_card, methods=["GET"]))
+        a2a_app.routes.insert(0, Route(f"/to_agent/{agent_id}/", to_agent_rpc, methods=["POST"]))
+        a2a_app.routes.insert(0, Route(f"/to_agent/{agent_id}", to_agent_rpc, methods=["POST"]))
+
+        return a2a_app
+
+
 def create_a2a_server(
     agent: Agent,
     host: str = "0.0.0.0",
@@ -668,7 +761,7 @@ def create_a2a_server(
     api_key: Optional[str] = None,
     model_id: str = "gpt-5-mini-2025-08-07",
     max_tokens: int = 4096
-) -> A2AServer:
+) -> A2AServerWithStatus:
     """Create an A2A server with custom executor for SWE-bench tasks.
 
     Uses a custom executor that creates a fresh agent for each task,
@@ -703,7 +796,7 @@ def create_a2a_server(
         # Controller proxies to root, so serve at root even with path in URL
         server_kwargs["serve_at_root"] = True
 
-    server = A2AServer(**server_kwargs)
+    server = A2AServerWithStatus(**server_kwargs)
 
     # Replace the default executor with our custom one that:
     # 1. Creates a fresh agent per task (no shared conversation history)
