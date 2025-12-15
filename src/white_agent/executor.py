@@ -1,5 +1,6 @@
 """SWE-bench White Agent Executor using Strands Agents SDK."""
 
+import asyncio
 import gc
 import logging
 import os
@@ -555,7 +556,6 @@ class SWEBenchA2AExecutor(AgentExecutor):
                     new_agent_text_message(f"Cloning repository...", updater.context_id, updater.task_id)
                 )
                 # Run blocking clone operation in thread pool
-                import asyncio
                 cloned_path = await asyncio.to_thread(clone_repository, repo_url, base_commit, task_id)
                 set_repo_path(cloned_path)
                 logger.info(f"Repository cloned to: {cloned_path}")
@@ -567,25 +567,32 @@ class SWEBenchA2AExecutor(AgentExecutor):
             logger.info("Creating fresh agent instance")
             agent = self._create_fresh_agent()
 
-            # Stream the agent response
+            # Run the agent synchronously to avoid streaming corruption
             await updater.update_status(
                 TaskState.working,
                 new_agent_text_message(f"Analyzing issue and generating patch...", updater.context_id, updater.task_id)
             )
 
-            response_text = ""
-            async for event in agent.stream_async(user_input):
-                if "data" in event:
-                    if text_content := event["data"]:
-                        response_text += text_content
-                        await updater.update_status(
-                            TaskState.working,
-                            new_agent_text_message(text_content, updater.context_id, updater.task_id)
-                        )
-                elif "result" in event:
-                    result = event["result"]
-                    if result:
-                        response_text = str(result)
+            # Use synchronous call to get complete, uncorrupted response
+            # (streaming was causing tool call logging to mix with patch content)
+            response = await asyncio.to_thread(agent, user_input)
+
+            # Extract response text from Strands response object
+            if hasattr(response, 'message') and response.message:
+                msg = response.message
+                if isinstance(msg, dict) and 'content' in msg:
+                    content = msg['content']
+                    if isinstance(content, list):
+                        texts = [c.get('text', '') for c in content if isinstance(c, dict) and 'text' in c]
+                        response_text = '\n'.join(texts)
+                    else:
+                        response_text = str(content)
+                else:
+                    response_text = str(msg)
+            elif hasattr(response, 'text'):
+                response_text = str(response.text)
+            else:
+                response_text = str(response)
 
             # Extract and format patch
             final_response = extract_patch(response_text)
