@@ -143,10 +143,12 @@ gcloud run deploy swebench-white-agent \
 
 ```bash
 # Terminal 1: Start agent
-python main.py serve --port 9002
+cloudflared tunnel --url http://localhost:8081
 
 # Terminal 2: Create tunnel
-cloudflared tunnel --url http://localhost:9002
+export CLOUDRUN_HOST=<your cloudflared tunnel domain name>
+export HTTPS_ENABLED=true
+agentbeats run_ctrl
 ```
 
 After deployment, register on [v2.agentbeats.org](https://v2.agentbeats.org) as "Assessee (White)" agent.
@@ -321,9 +323,8 @@ python main.py version
 ## Limitations & Future Work
 
 ### Current Limitations
-- Uses GPT-5-mini (weaker than GPT-4o or Claude)
+- Uses GPT-5-mini
 - No bash execution for running tests
-- Sequential processing recommended (race condition with parallel)
 
 ### Potential Improvements
 - Add `run_tests` tool for verification
@@ -336,7 +337,7 @@ python main.py version
 ## Built With
 
 - [Strands Agents SDK](https://strandsagents.com/) - Agent framework by AWS
-- [OpenAI GPT](https://openai.com/) - Language model
+- [OpenAI](https://openai.com/) - Language model
 - [A2A Protocol](https://github.com/google/a2a) - Agent communication
 - [AgentBeats](https://v2.agentbeats.org) - Evaluation platform
 
