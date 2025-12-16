@@ -1,55 +1,103 @@
 # SWE-bench White Agent
 
-A minimal white agent implementation for [SWE-bench](https://www.swebench.com/) evaluation, built with the **Strands Agents SDK**. This agent receives GitHub issues via the A2A protocol, explores repositories using tools, and generates unified diff patches.
+A minimal, modular white agent for [SWE-bench](https://www.swebench.com/) evaluation built with the **Strands Agents SDK**.
 
-## Overview
+---
 
-This white agent is designed to work with the [AgentBeats](https://v2.agentbeats.org) evaluation platform. It:
+## What is This?
 
-1. Receives tasks from a green agent (orchestrator) containing GitHub issue details
-2. Clones the repository at the specified commit
-3. Uses tools to explore and understand the codebase
-4. Generates a unified diff patch to fix the issue
+This agent receives GitHub issues and generates code patches to fix bugs in real open-source repositories.
+
+```
+Input:  GitHub issue description + repository
+Output: Unified diff patch that fixes the bug
+```
+
+---
 
 ## Architecture
 
 ```
-Green Agent (Orchestrator)
-        |
-        v  (A2A Protocol)
-+-------------------+
-|   White Agent     |
-|-------------------|
-|  - read_file      |
-|  - search_code    |  --> Repository
-|  - find_files     |
-|  - list_directory |
-|  - get_file_info  |
-+-------------------+
-        |
-        v
-   <patch>...</patch>
+┌─────────────────────────────────────────────────────────┐
+│                    GREEN AGENT                          │
+│                   (Orchestrator)                        │
+└─────────────────────┬───────────────────────────────────┘
+                      │ A2A Protocol
+                      ▼
+┌─────────────────────────────────────────────────────────┐
+│                    WHITE AGENT                          │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │              Strands Agents SDK                   │  │
+│  │  ┌─────────────┐    ┌──────────────────────────┐  │  │
+│  │  │ GPT-5-mini  │    │        6 Tools           │  │  │
+│  │  │   (LLM)     │    │  • read_file             │  │  │
+│  │  └─────────────┘    │  • search_code           │  │  │
+│  │                     │  • find_files            │  │  │
+│  │                     │  • list_directory        │  │  │
+│  │                     │  • get_file_info         │  │  │
+│  │                     │  • validate_patch        │  │  │
+│  │                     └──────────────────────────┘  │  │
+│  └───────────────────────────────────────────────────┘  │
+└─────────────────────┬───────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────────┐
+│              CLONED GIT REPOSITORY                      │
+│         (Django, scikit-learn, sympy, etc.)             │
+└─────────────────────────────────────────────────────────┘
+                      │
+                      ▼
+                 <patch>...</patch>
 ```
 
-**Model**: `gpt-4o-mini` (configurable)
+---
 
-**Framework**: [Strands Agents SDK](https://strandsagents.com/) with built-in memory and context management
+## Decision-Making Pipeline
+
+```
+1. PARSE      →  Extract task_id, repo_url, commit, problem_statement
+2. CLONE      →  Clone repository at specified commit
+3. EXPLORE    →  Use search_code, find_files to locate relevant code
+4. READ       →  Use read_file to understand the buggy code
+5. GENERATE   →  Create unified diff patch
+6. VALIDATE   →  Use validate_patch to verify it applies cleanly
+7. SUBMIT     →  Return patch wrapped in <patch>...</patch> tags
+```
+
+---
+
+## Tools Available
+
+| Tool | Description | Example Use |
+|------|-------------|-------------|
+| `read_file` | Read file with line numbers | Find exact line numbers for patch |
+| `search_code` | Grep patterns in codebase | Locate where a function is defined |
+| `find_files` | Find files by name | Find `validators.py` in Django |
+| `list_directory` | Show directory tree | Understand project structure |
+| `get_file_info` | Get file metadata | Check file size before reading |
+| `validate_patch` | Dry-run git apply | Verify patch before submitting |
+
+---
 
 ## Quick Start
 
-### 1. Install Dependencies
+### 1. Clone and Install
 
 ```bash
+git clone https://github.com/jawtopi/swebench-white-agent.git
+cd swebench-white-agent
+
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
-### 2. Configure Environment
+### 2. Configure
 
 ```bash
 cp .env.example .env
-# Edit .env and add your OpenAI API key:
+# Edit .env and add:
 # OPENAI_API_KEY=sk-...
 ```
 
@@ -58,146 +106,249 @@ cp .env.example .env
 ```bash
 # Start the A2A server
 python main.py serve --port 9002
-
-# Or use the run script
-./run.sh
 ```
 
-### 4. Test the Agent
+### 4. Test with Sample Task
 
 ```bash
-# Test with a sample Django issue (will auto-clone the repo)
+# Test with a Django issue (auto-clones repo)
 python main.py test
 ```
+
+---
 
 ## Deployment on AgentBeats
 
-### Option 1: Using AgentBeats Controller (Recommended)
-
-```bash
-# Set environment variables
-export OPENAI_API_KEY=sk-...
-export CLOUDRUN_HOST=your-deployment-url.com
-export HTTPS_ENABLED=true
-
-# Run with controller
-agentbeats run_ctrl
-```
-
-### Option 2: Cloud Run Deployment
+### Option A: Cloud Run (Recommended)
 
 ```bash
 # Deploy to Google Cloud Run
-./deploy-cloudrun.sh
+gcloud run deploy swebench-white-agent \
+  --source . \
+  --region us-central1 \
+  --set-env-vars "OPENAI_API_KEY=sk-..." \
+  --set-env-vars "CLOUDRUN_HOST=your-url.run.app" \
+  --set-env-vars "HTTPS_ENABLED=true" \
+  --min-instances 1
 ```
 
-### Option 3: Railway / Other PaaS
-
-The `Procfile` is configured for platforms like Railway:
-```
-web: agentbeats run_ctrl
-```
-
-After deployment, register your agent on [v2.agentbeats.org](https://v2.agentbeats.org) as an "Assessee (White)" agent.
-
-## CLI Commands
+### Option B: Railway
 
 ```bash
-# Start A2A server
-python main.py serve --host 0.0.0.0 --port 9002
-
-# Start with custom model
-python main.py serve --model gpt-4o-mini --port 9002
-
-# Test with sample task
-python main.py test
-
-# Test with specific repository (skips cloning)
-python main.py test --repo-path /path/to/django
-
-# Show version
-python main.py version
+# Push to GitHub, connect Railway, add env vars
+# Procfile uses: agentbeats run_ctrl
 ```
 
-## Configuration
+### Option C: Local with Tunnel
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `OPENAI_API_KEY` | OpenAI API key (required) | - |
-| `HOST` | Server bind address | `0.0.0.0` |
-| `AGENT_PORT` | Server port | `9002` |
-| `REPOS_DIR` | Directory for cloned repos | `/tmp/swebench_repos` |
-| `CLOUDRUN_HOST` | Public hostname for agent card | - |
-| `HTTPS_ENABLED` | Use HTTPS URLs in agent card | `false` |
+```bash
+# Terminal 1: Start agent
+python main.py serve --port 9002
 
-## Tools Available to the Agent
+# Terminal 2: Create tunnel
+cloudflared tunnel --url http://localhost:9002
+```
 
-| Tool | Description |
-|------|-------------|
-| `read_file` | Read file contents with line numbers |
-| `search_code` | Search for patterns using grep |
-| `find_files` | Find files by name |
-| `list_directory` | List directory tree |
-| `get_file_info` | Get file size and line count |
-| `validate_patch` | Validate patch with git apply --check (prevents malformed patches) |
+After deployment, register on [v2.agentbeats.org](https://v2.agentbeats.org) as "Assessee (White)" agent.
+
+---
 
 ## Input/Output Format
 
-**Input** (from green agent):
+### Input (from Green Agent)
+
 ```xml
 <task_id>django__django-11099</task_id>
 <repository>django/django</repository>
 <repo_url>https://github.com/django/django</repo_url>
 <base_commit>abc123...</base_commit>
 <problem_statement>
-Description of the bug...
+UsernameValidator allows trailing newline in usernames.
+The regex uses $ instead of \Z which allows trailing newlines.
 </problem_statement>
 ```
 
-**Output**:
-```
+### Output (to Green Agent)
+
+```diff
 <patch>
-diff --git a/path/to/file.py b/path/to/file.py
---- a/path/to/file.py
-+++ b/path/to/file.py
-@@ -10,6 +10,7 @@
- context line
--old line
-+new line
- context line
+diff --git a/django/contrib/auth/validators.py b/django/contrib/auth/validators.py
+--- a/django/contrib/auth/validators.py
++++ b/django/contrib/auth/validators.py
+@@ -8,7 +8,7 @@
+
+ @deconstructible
+ class ASCIIUsernameValidator(validators.RegexValidator):
+-    regex = r'^[\w.@+-]+$'
++    regex = r'^[\w.@+-]+\Z'
+     message = _(
+         'Enter a valid username.'
+     )
 </patch>
 ```
+
+---
+
+## Reproducing Evaluation Results
+
+### Step 1: Deploy White Agent
+
+```bash
+# Ensure white agent is running and accessible
+curl https://your-white-agent-url/.well-known/agent-card.json
+```
+
+### Step 2: Run Green Agent Assessment
+
+```bash
+# On your green agent machine
+cd swebench-green-agent
+
+# Run evaluation (use max_workers=1 for stability)
+python main.py evaluate \
+  --white-agent-url https://your-white-agent-url \
+  --sample-size 10 \
+  --max-workers 1
+```
+
+### Step 3: View Results
+
+```
+============================================================
+GREEN AGENT: EVALUATION COMPLETE
+============================================================
+Dataset: SWE-bench Verified
+Total tasks: 10
+Resolved: 1/10 (10.0%)
+Failed: 7
+Errors: 2
+============================================================
+```
+
+---
+
+## Expected Results
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| **Resolve Rate** | 10-20% | Patches that fix the issue |
+| **Patch Generation** | 80-90% | Valid unified diff produced |
+| **Avg Tool Calls** | 20-50 | Per task exploration |
+| **Avg Time** | 60-90s | Per task completion |
+
+**Model**: GPT-5-mini (cost-efficient, not SOTA)
+
+---
 
 ## Project Structure
 
 ```
 swebench-white-agent/
-├── main.py                 # CLI entry point
-├── run.sh                  # AgentBeats startup script
-├── Procfile                # PaaS deployment config
-├── Dockerfile              # Container config
-├── requirements.txt        # Python dependencies
-├── .env.example            # Environment template
-└── src/white_agent/
-    ├── __init__.py
-    └── executor.py         # Agent implementation
+├── main.py                     # CLI entry point
+│   └── serve                   # Start A2A server
+│   └── test                    # Test with sample task
+│   └── version                 # Show version
+│
+├── src/white_agent/
+│   ├── __init__.py
+│   └── executor.py             # Core implementation
+│       ├── Tools (6)           # read_file, search_code, etc.
+│       ├── SYSTEM_PROMPT       # Agent instructions
+│       ├── SWEBenchA2AExecutor # Task execution logic
+│       └── A2AServerWithStatus # AgentBeats compatibility
+│
+├── run.sh                      # Startup script
+├── Procfile                    # web: agentbeats run_ctrl
+├── Dockerfile                  # Container config
+├── requirements.txt            # Dependencies
+└── .env.example                # Environment template
 ```
 
-## Reproducing Evaluation Results
+---
 
-1. Deploy the agent to a publicly accessible URL
-2. Register on AgentBeats as a white agent
-3. Run evaluation batches (we tested with batches of 10 tasks)
-4. Results are reported by the AgentBeats platform
+## Key Design Decisions
 
-**Expected performance**: ~10-20% resolve rate on SWE-bench Verified tasks with `gpt-4o-mini`.
+### 1. Fresh Agent Per Task
+Each task gets a new agent instance - no conversation history leakage between tasks.
+
+### 2. Auto Repository Cloning
+Agent clones the exact commit specified, ensuring reproducible environments.
+
+### 3. Validate Before Submit
+`validate_patch` tool runs `git apply --check` to catch malformed patches.
+
+### 4. Strands SDK Benefits
+- Built-in memory management
+- Tool execution framework
+- A2A protocol support
+
+---
+
+## CLI Reference
+
+```bash
+# Start server
+python main.py serve --host 0.0.0.0 --port 9002
+
+# Start with custom model
+python main.py serve --model gpt-5-mini --port 9002
+
+# Test locally
+python main.py test
+
+# Test with specific repo
+python main.py test --repo-path /path/to/django
+
+# Show version
+python main.py version
+```
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENAI_API_KEY` | Yes | OpenAI API key |
+| `HOST` | No | Server bind address (default: 0.0.0.0) |
+| `AGENT_PORT` | No | Server port (default: 9002) |
+| `REPOS_DIR` | No | Clone directory (default: /tmp/swebench_repos) |
+| `CLOUDRUN_HOST` | No | Public hostname for agent card |
+| `HTTPS_ENABLED` | No | Use HTTPS in agent card URLs |
+
+---
+
+## Limitations & Future Work
+
+### Current Limitations
+- Uses GPT-5-mini (weaker than GPT-4o or Claude)
+- No bash execution for running tests
+- Sequential processing recommended (race condition with parallel)
+
+### Potential Improvements
+- Add `run_tests` tool for verification
+- Use stronger model for complex tasks
+- Add planning/reasoning steps
+- Containerized execution environment
+
+---
 
 ## Built With
 
-- [Strands Agents SDK](https://strandsagents.com/) - Agent framework
+- [Strands Agents SDK](https://strandsagents.com/) - Agent framework by AWS
 - [OpenAI GPT](https://openai.com/) - Language model
 - [A2A Protocol](https://github.com/google/a2a) - Agent communication
 - [AgentBeats](https://v2.agentbeats.org) - Evaluation platform
+
+---
+
+## Repository
+
+**GitHub**: https://github.com/jawtopi/swebench-white-agent
+
+**Branch**: `main`
+
+---
 
 ## License
 
